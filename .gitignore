@@ -1,0 +1,61 @@
+# ==============================================================================
+# Git Ignore Configuration - SehatKosh Medical Document De-Identification
+# ==============================================================================
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+redaction_env/
+venv/
+env/
+.env
+.venv/
+ENV/
+
+# Sensitive Patient Medical Data & Raw Input Documents
+# (Protects patient privacy & prevents accidental commits of confidential data)
+Data/*
+!Data/.gitkeep
+raw_data/
+raw_documents/
+*.pdf
+
+# Output Generated Redacted Images & Run Artifacts
+# (Preserves directory structure while preventing multi-gigabyte image commits)
+redacted_documents/*
+!redacted_documents/.gitkeep
+redacted_documents/*.png
+redacted_documents/*.jpg
+redacted_documents/*.jpeg
+redacted_documents/redaction_manifest.json
+redacted_documents/audit_review.csv
+
+# Application Logs
+*.log
+redaction.log
+
+# Temporary & Scratch benchmark files
+*.tmp
+*.bak
+*.swp
+*.swo
+test_ocr_api.py
+check_paddle_gpu.py
+benchmark_speed.py
+test_ocr_speed.py
+check_models.py
+compare_v4.py
+
+# OS & Editor generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.code-workspace
