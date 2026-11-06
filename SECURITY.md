@@ -29,3 +29,4 @@ If you discover a security vulnerability, an insecure dependency, or an algorith
    - The version of the pipeline and models used.
    - Any proposed regular expressions or anchor label enhancements.
 3. We will acknowledge receipt within 48 hours and work with you to test and release a patch.
+
