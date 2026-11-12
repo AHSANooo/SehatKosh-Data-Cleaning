@@ -14,7 +14,6 @@ __pycache__/
 redaction_env/
 venv/
 env/
-.env
 .venv/
 ENV/
 
@@ -57,6 +56,7 @@ compare_v4.py
 Thumbs.db
 desktop.ini
 .idea/
-.vscode/
 *.code-workspace
 
+config.bat
+node_modules
