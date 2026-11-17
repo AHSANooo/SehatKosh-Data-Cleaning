@@ -14,7 +14,7 @@ import time
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from tqdm import tqdm
 from PIL import Image
@@ -163,8 +163,13 @@ def run_prelabeling(args):
         return
 
     # Initialize PyTorch and TrOCR
-    import torch
-    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    try:
+        import torch
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    except ImportError:
+        logger.error("PyTorch and Hugging Face Transformers are required for Step 2.")
+        logger.error("To install, run: pip install torch torchvision transformers")
+        sys.exit(1)
 
     if args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available()):
         target_device = torch.device("cuda")

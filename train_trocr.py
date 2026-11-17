@@ -15,17 +15,21 @@ from pathlib import Path
 from typing import Dict, Any
 
 import pandas as pd
-import torch
-from torch.utils.data import Dataset
 from PIL import Image
 
-from transformers import (
-    TrOCRProcessor,
-    VisionEncoderDecoderModel,
-    Seq2SeqTrainer,
-    Seq2SeqTrainingArguments,
-    default_data_collator,
-)
+try:
+    import torch
+    from torch.utils.data import Dataset
+    from transformers import (
+        TrOCRProcessor,
+        VisionEncoderDecoderModel,
+        Seq2SeqTrainer,
+        Seq2SeqTrainingArguments,
+        default_data_collator,
+    )
+except ImportError:
+    torch = None
+    Dataset = object
 
 # Configure logging
 logging.basicConfig(
@@ -125,6 +129,11 @@ def compute_cer(preds, labels):
 
 def main():
     args = parse_args()
+
+    if torch is None:
+        logger.error("PyTorch and Hugging Face Transformers are required for Step 4.")
+        logger.error("To install, run: pip install torch torchvision transformers editdistance")
+        sys.exit(1)
     dataset_dir = Path(args.dataset_dir).resolve()
     metadata_path = dataset_dir / "metadata.csv"
 

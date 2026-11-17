@@ -4,13 +4,14 @@ extract_trocr_lines.py - Step 1: Automated Page Orientation Fix & Handwritten Li
 
 Processes cleaned and de-identified medical document pages:
   1. Detects and corrects page orientation (0°, 90°, 180°, 270°).
-  2. Detects text lines using local PaddleOCR.
-  3. Filters out static printed hospital form headers and field labels.
-  4. Merges fragmented handwritten lines horizontally without crossing printed form labels.
-  5. Applies anti-clipping padding (+14px horizontal, +10px vertical) to protect ascenders and descenders.
-  6. Generates full-page verification overlays with numbered red boxes (doc_id_boxed.png).
-  7. Saves line crops (crops/{doc_id}_L001.png) and Hugging Face ready metadata.csv & annotation_sheet.csv.
-  8. Resumable execution via atomic extraction_manifest.json.
+  2. Reuses OCR detections when orientation is already upright to eliminate redundant computation.
+  3. Proportional inference scaling for high throughput while extracting full-resolution crops.
+  4. Filters out static printed hospital form headers and field labels.
+  5. Merges fragmented handwritten lines horizontally without crossing printed form labels.
+  6. Applies anti-clipping padding (+14px horizontal, +10px vertical) to protect ascenders and descenders.
+  7. Generates full-page verification overlays with numbered red boxes (doc_id_boxed.png).
+  8. Saves line crops (crops/{doc_id}_L001.png) and Hugging Face ready metadata.csv & annotation_sheet.csv.
+  9. Resumable execution via atomic extraction_manifest.json.
 """
 
 import os
@@ -101,9 +102,10 @@ def rotate_image(img: np.ndarray, angle: int) -> np.ndarray:
     return img
 
 
-def init_ocr(device: str = "auto", cpu_threads: int = 4):
+def init_ocr(device: str = "auto", cpu_threads: int = 4, ocr_version: str = "PP-OCRv4"):
     """
-    Initializes PaddleOCR with safe device selection and threading.
+    Initializes PaddleOCR with optimal speed/accuracy settings.
+    Default: PP-OCRv4 Mobile for fast local inference.
     """
     global ocr_engine
     if ocr_engine is not None:
@@ -118,7 +120,7 @@ def init_ocr(device: str = "auto", cpu_threads: int = 4):
             use_gpu = True
 
     chosen_device = "gpu:0" if use_gpu else "cpu"
-    logger.info(f"Initializing PaddleOCR (device={chosen_device}, cpu_threads={cpu_threads})...")
+    logger.info(f"Initializing PaddleOCR (version={ocr_version}, device={chosen_device}, cpu_threads={cpu_threads})...")
 
     ocr_kwargs = {
         "device": chosen_device,
@@ -131,9 +133,12 @@ def init_ocr(device: str = "auto", cpu_threads: int = 4):
         "lang": "en"
     }
 
+    if ocr_version:
+        ocr_kwargs["ocr_version"] = ocr_version
+
     try:
         ocr_engine = PaddleOCR(**ocr_kwargs)
-        logger.info(f"PaddleOCR successfully initialized on {chosen_device}.")
+        logger.info(f"PaddleOCR {ocr_version} successfully initialized on {chosen_device}.")
     except Exception as e:
         logger.warning(f"PaddleOCR failed with {chosen_device} ({e}). Falling back to CPU.")
         ocr_kwargs["device"] = "cpu"
@@ -142,16 +147,27 @@ def init_ocr(device: str = "auto", cpu_threads: int = 4):
     return ocr_engine
 
 
-def run_ocr_inference(ocr, img: np.ndarray) -> List[Tuple[Any, Tuple[str, float]]]:
+def run_ocr_inference(ocr, img: np.ndarray, max_dim: int = 1500) -> List[Tuple[Any, Tuple[str, float]]]:
     """
-    Runs PaddleOCR on image and returns standard list of [poly, (text, conf)].
-    Handles both PaddleOCR 3.7 dictionary prediction format and legacy list formats.
+    Runs PaddleOCR on image with optional proportional scaling for speed,
+    rescaling bounding box coordinates back to full-resolution dimensions.
     """
+    h_img, w_img = img_cv_shape = img.shape[:2]
+    scale_factor = 1.0
+    ocr_input = img
+
+    curr_max = max(h_img, w_img)
+    if curr_max > max_dim:
+        scale_factor = float(max_dim) / curr_max
+        new_w = int(w_img * scale_factor)
+        new_h = int(h_img * scale_factor)
+        ocr_input = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
     try:
-        res = ocr.predict(img)
+        res = ocr.predict(ocr_input)
     except Exception:
         try:
-            res = ocr.ocr(img, cls=True)
+            res = ocr.ocr(ocr_input, cls=True)
         except Exception as e:
             logger.error(f"OCR inference failed: {e}")
             return []
@@ -161,6 +177,7 @@ def run_ocr_inference(ocr, img: np.ndarray) -> List[Tuple[Any, Tuple[str, float]
 
     items = []
     first = res[0]
+    inv_scale = 1.0 / scale_factor if scale_factor != 1.0 else 1.0
 
     # PaddleOCR 3.7+ dictionary prediction format
     if isinstance(first, dict):
@@ -177,9 +194,12 @@ def run_ocr_inference(ocr, img: np.ndarray) -> List[Tuple[Any, Tuple[str, float]
 
             if idx < len(rec_polys):
                 poly = rec_polys[idx]
+                if scale_factor != 1.0:
+                    poly = (np.array(poly) * inv_scale).astype(np.int32)
             elif idx < len(rec_boxes):
                 b = rec_boxes[idx]
-                poly = np.array([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]])
+                x1, y1, x2, y2 = int(b[0] * inv_scale), int(b[1] * inv_scale), int(b[2] * inv_scale), int(b[3] * inv_scale)
+                poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
             else:
                 continue
 
@@ -190,20 +210,24 @@ def run_ocr_inference(ocr, img: np.ndarray) -> List[Tuple[Any, Tuple[str, float]
         for entry in first:
             if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                 poly, text_conf = entry[0], entry[1]
+                if scale_factor != 1.0:
+                    poly = (np.array(poly) * inv_scale).astype(np.int32)
                 if isinstance(text_conf, (list, tuple)) and len(text_conf) >= 2:
                     items.append((poly, (str(text_conf[0]).strip(), float(text_conf[1]))))
 
     return items
 
 
-def fix_page_orientation(img: np.ndarray, ocr) -> Tuple[np.ndarray, int]:
+def fix_page_orientation(img: np.ndarray, ocr) -> Tuple[np.ndarray, int, List[Tuple[Any, Tuple[str, float]]]]:
     """
-    Detects 90/180/270 degree page rotation using box geometry, text orientation,
-    and printed hospital form keyword anchor scoring.
+    Detects 90/180/270 degree page rotation.
+    Returns: (upright_img, rotated_deg, lines_on_upright_img).
+    Crucial optimization: If already upright (0°), returns the already-computed lines,
+    cutting processing time by 50%!
     """
     lines = run_ocr_inference(ocr, img)
     if not lines:
-        return img, 0
+        return img, 0, []
 
     vertical_boxes = 0
     horizontal_boxes = 0
@@ -220,6 +244,7 @@ def fix_page_orientation(img: np.ndarray, ocr) -> Tuple[np.ndarray, int]:
     if vertical_boxes > horizontal_boxes:
         best_angle = 0
         best_score = -1.0
+        best_lines = []
         for cand_angle in [90, 270]:
             cand_img = rotate_image(img, cand_angle)
             cand_lines = run_ocr_inference(ocr, cand_img)
@@ -231,8 +256,9 @@ def fix_page_orientation(img: np.ndarray, ocr) -> Tuple[np.ndarray, int]:
             if score > best_score:
                 best_score = score
                 best_angle = cand_angle
+                best_lines = cand_lines
         if best_angle != 0:
-            return rotate_image(img, best_angle), best_angle
+            return rotate_image(img, best_angle), best_angle, best_lines
 
     # Step 2: Detect upside-down scans (180 degrees)
     upright_score = 0
@@ -249,9 +275,10 @@ def fix_page_orientation(img: np.ndarray, ocr) -> Tuple[np.ndarray, int]:
             score_180 += sum(3 for w in words if w in UPRIGHT_ANCHORS)
 
         if score_180 > upright_score:
-            return img_180, 180
+            return img_180, 180, lines_180
 
-    return img, 0
+    # Already upright! Reuse already computed lines
+    return img, 0, lines
 
 
 def is_printed_form_label(img_crop: np.ndarray, text: str) -> bool:
@@ -279,7 +306,6 @@ def is_printed_form_label(img_crop: np.ndarray, text: str) -> bool:
     # 3. Pen ink color boost: if the crop contains clear blue/purple pen ink, it is definitely handwritten
     if img_crop is not None and img_crop.size > 0:
         hsv = cv2.cvtColor(img_crop, cv2.COLOR_BGR2HSV)
-        # Blue/purple ballpoint ink range in HSV
         blue_mask = cv2.inRange(hsv, np.array([85, 30, 40]), np.array([145, 255, 240]))
         ink_ratio = np.count_nonzero(blue_mask) / float(img_crop.shape[0] * img_crop.shape[1])
         if ink_ratio > 0.015:
@@ -380,6 +406,7 @@ def run_pipeline(
     pad_x: int = 14,
     pad_y: int = 10,
     device: str = "auto",
+    ocr_version: str = "PP-OCRv4",
     sample_limit: Optional[int] = None,
     force_reprocess: bool = False
 ):
@@ -398,7 +425,7 @@ def run_pipeline(
         return
 
     # Initialize OCR
-    ocr = init_ocr(device=device, cpu_threads=4)
+    ocr = init_ocr(device=device, cpu_threads=4, ocr_version=ocr_version)
 
     # Discover documents with natural sorting
     supported_exts = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
@@ -472,13 +499,10 @@ def run_pipeline(
             if raw_img is None:
                 raise ValueError(f"Could not read image: {file_path}")
 
-            # 1. Orientation fix
-            img, rotated_deg = fix_page_orientation(raw_img, ocr)
+            # 1. Orientation fix + reuse OCR detections
+            img, rotated_deg, lines = fix_page_orientation(raw_img, ocr)
             h_img, w_img = img.shape[:2]
             cv2.imwrite(str(upright_dir / f"{doc_id}.png"), img)
-
-            # 2. Line detection on upright page
-            lines = run_ocr_inference(ocr, img)
 
             hw_items = []
             printed_boxes = []
@@ -495,10 +519,10 @@ def run_pipeline(
                 else:
                     hw_items.append({"rect": rect, "text": text.strip()})
 
-            # 3. Horizontal layout-aware merging
+            # 2. Horizontal layout-aware merging
             line_boxes = merge_same_line_boxes(hw_items, printed_boxes)
 
-            # 4. Generate line crops and verification overlay
+            # 3. Generate line crops and verification overlay
             annotated_img = img.copy()
 
             for line_idx, item in enumerate(line_boxes, start=1):
@@ -582,7 +606,7 @@ def run_pipeline(
                 writer.writerows(annotation_rows)
             gc.collect()
 
-        progress_bar.set_postfix({"Total Crops": total_crops_generated})
+        progress_bar.set_postfix({"Total Crops": total_crops_generated, "Last(s)": f"{elapsed:.1f}"})
 
     # Final saves
     save_manifest(manifest_path, manifest)
@@ -631,6 +655,7 @@ def main():
     parser.add_argument("--pad_x", type=int, default=14, help="Horizontal padding around line crops in px (default: 14)")
     parser.add_argument("--pad_y", type=int, default=10, help="Vertical padding around line crops in px (default: 10)")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "gpu", "cpu"], help="Compute device (default: auto)")
+    parser.add_argument("--ocr_version", type=str, default="PP-OCRv4", choices=["PP-OCRv4", "PP-OCRv6"], help="PaddleOCR model version (default: PP-OCRv4)")
     parser.add_argument("--sample", type=int, default=None, help="Process only the first N documents for testing")
     parser.add_argument("--force", action="store_true", help="Force re-processing of already processed documents")
 
@@ -642,6 +667,7 @@ def main():
         pad_x=args.pad_x,
         pad_y=args.pad_y,
         device=args.device,
+        ocr_version=args.ocr_version,
         sample_limit=args.sample,
         force_reprocess=args.force
     )
