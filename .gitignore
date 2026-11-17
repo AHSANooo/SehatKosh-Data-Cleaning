@@ -33,7 +33,9 @@ redacted_documents/*.png
 redacted_documents/*.jpg
 redacted_documents/*.jpeg
 redacted_documents/redaction_manifest.json
-redacted_documents/audit_review.csv
+redacted_documents/audit_review.
+redacted_documents_clean_reordered/
+
 
 # Application Logs
 *.log
