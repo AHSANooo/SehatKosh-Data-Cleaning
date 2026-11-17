@@ -36,6 +36,14 @@ redacted_documents/redaction_manifest.json
 redacted_documents/audit_review.
 redacted_documents_clean_reordered/
 
+# TrOCR Dataset Image Crops & Model Checkpoints
+trocr_dataset/*
+!trocr_dataset/.gitkeep
+trocr_medical_finetuned/
+training.log
+prelabel.log
+extraction.log
+
 
 # Application Logs
 *.log

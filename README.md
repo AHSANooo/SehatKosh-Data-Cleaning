@@ -187,6 +187,71 @@ Open **[http://localhost:8501](http://localhost:8501)** in your browser.
 
 ---
 
+## ✍️ Medical Handwriting Extraction & TrOCR Fine-Tuning Pipeline
+
+A complete 4-step pipeline to extract handwritten doctor notes from de-identified pages, generate draft transcriptions, review and remove PII in a dedicated UI, and fine-tune VisionEncoderDecoder models (TrOCR):
+
+```
+redacted_documents_clean_reordered/
+        │
+        ▼ (Step 1: extract_trocr_lines.py)
+trocr_dataset/
+  ├── upright_pages/         # Orientation-corrected pages (0°, 90°, 180°, 270°)
+  ├── annotated_pages/       # Full pages with numbered red bounding boxes (*_boxed.png)
+  ├── crops/                 # Anti-clipping padded line crops ({doc_id}_L001.png)
+  ├── annotation_sheet.csv   # Line crops with draft OCR predictions
+  └── metadata.csv           # Hugging Face TrOCR format (file_name, text, bbox)
+        │
+        ▼ (Step 2: batch_trocr_prelabel.py)
+Updated annotation_sheet.csv (Populated with Batched PyTorch TrOCR Drafts)
+        │
+        ▼ (Step 3: streamlit_review.py)
+Streamlit Review UI (Fast Human Verification, PII/Garbage Dropping & Context Inspection)
+        │
+        ▼ (Step 4: train_trocr.py)
+Fine-Tuned Medical TrOCR Model (Saved to ./trocr_medical_finetuned/)
+```
+
+### 1. Step 1: Orientation Fix & Line Extraction
+Extracts handwritten lines, detects & fixes page rotation, strips printed form headers, and crops lines with +14px H / +10px V padding:
+- **Windows**: Double-click [`run_step1_extract.bat`](file:///d:/Projects/SehatKosh%20Data%20Cleaning/run_step1_extract.bat)
+- **Terminal**:
+  ```bash
+  python3 extract_trocr_lines.py
+  # Or test first 10 documents:
+  python3 extract_trocr_lines.py --sample 10
+  ```
+
+### 2. Step 2: Batched PyTorch TrOCR Pre-Labeling
+Runs local GPU inference to populate `draft_ocr` so annotators don't type from scratch:
+- **Windows**: Double-click [`run_step2_prelabel.bat`](file:///d:/Projects/SehatKosh%20Data%20Cleaning/run_step2_prelabel.bat)
+- **Terminal**:
+  ```bash
+  python3 batch_trocr_prelabel.py --model base --batch_size 8 --fp16
+  ```
+
+### 3. Step 3: Fast Local Verification & PII Removal UI
+Launches a specialized Streamlit interface for student annotators on **http://localhost:8501**:
+- **Windows**: Double-click [`run_step3_review.bat`](file:///d:/Projects/SehatKosh%20Data%20Cleaning/run_step3_review.bat)
+- **Terminal**:
+  ```bash
+  streamlit run streamlit_review.py
+  ```
+- **Hotkeys & Controls**:
+  - `Enter` or `Approve & Next`: Saves verified ground truth text directly to `metadata.csv`.
+  - `Discard (PII / Illegible)`: Removes patient names, CNICs, or unreadable scribbles from the training set.
+  - `View Full Context`: Collapsible expander displays the parent page with the line's red numbered box.
+
+### 4. Step 4: Fine-Tune TrOCR on Verified Medical Lines
+Fine-tunes `microsoft/trocr-base-handwritten` on your verified medical dataset:
+- **Windows**: Double-click [`run_step4_train.bat`](file:///d:/Projects/SehatKosh%20Data%20Cleaning/run_step4_train.bat)
+- **Terminal**:
+  ```bash
+  python3 train_trocr.py --epochs 5 --batch_size 2 --grad_accum 8 --lr 5e-5
+  ```
+
+---
+
 ## 🔒 Privacy & Compliance Guarantees
 
 - **100% Air-Gapped & Offline**: Zero external network requests during OCR inference or NER processing.
