@@ -432,10 +432,6 @@ def run_pipeline(
     files = sorted([f for f in in_path.glob("*") if f.suffix.lower() in supported_exts], key=natural_key)
     logger.info(f"Discovered {len(files)} total images in {in_path}")
 
-    if sample_limit and sample_limit > 0:
-        files = files[:sample_limit]
-        logger.info(f"Sample limit applied: Processing first {len(files)} files.")
-
     # Resumption manifest
     manifest_path = out_path / "extraction_manifest.json"
     manifest = load_manifest(manifest_path)
@@ -479,6 +475,10 @@ def run_pipeline(
         files_to_process = unprocessed
     else:
         files_to_process = files
+
+    if sample_limit and sample_limit > 0:
+        files_to_process = files_to_process[:sample_limit]
+        logger.info(f"Sample limit applied: Processing {len(files_to_process)} file(s).")
 
     if not files_to_process:
         logger.info("All documents have already been processed! Nothing to do.")
